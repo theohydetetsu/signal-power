@@ -1,1 +1,8 @@
-
+streamlit
+pandas
+yfinance
+plotly
+numpy<2.0.0
+pytz
+openpyxl
+xlsxwriter
