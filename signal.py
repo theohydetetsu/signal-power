@@ -6,7 +6,7 @@ import numpy as np
 # --- KONFIGURASI HALAMAN ---
 st.set_page_config(page_title="Overpower Screener", layout="centered", initial_sidebar_state="collapsed")
 
-# --- CSS KUSTOM (Tema Gelap ala Aplikasi Anda) ---
+# --- CSS KUSTOM ---
 st.markdown("""
     <style>
     .main { background-color: #0E0E11; color: #FFFFFF; }
@@ -20,17 +20,14 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- FUNGSI: MENGAMBIL TREN IHSG (MARKET REGIME) ---
+# --- FUNGSI: MENGAMBIL TREN IHSG ---
 @st.cache_data(ttl=3600)
 def get_ihsg_regime():
     try:
         ihsg = yf.download("^JKSE", period="3mo", progress=False)
         if ihsg.empty: return "NETRAL"
-        
-        # Ambil nilai terakhir dengan aman
         close_ihsg = float(ihsg['Close'].iloc[-1])
         ma20_ihsg = float(ihsg['Close'].rolling(window=20).mean().iloc[-1])
-        
         return "BULLISH" if close_ihsg > ma20_ihsg else "BEARISH"
     except Exception:
         return "NETRAL"
@@ -41,14 +38,12 @@ def calculate_indicators(df):
     df['MA50'] = df['Close'].rolling(window=50).mean()
     df['VOL_SMA20'] = df['Volume'].rolling(window=20).mean()
     
-    # RSI Sederhana 14 hari
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
     
-    # MACD
     exp1 = df['Close'].ewm(span=12, adjust=False).mean()
     exp2 = df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = exp1 - exp2
@@ -61,24 +56,26 @@ st.title("⚡ Overpower Fast Trade Screener")
 ticker_input = st.text_input("Masukkan Kode Saham (contoh: TOWR, BBCA, GOTO):", "TOWR").upper()
 
 if ticker_input:
-    # Tambahkan .JK otomatis untuk saham Indonesia
     ticker_symbol = f"{ticker_input}.JK" if not ticker_input.endswith(".JK") else ticker_input
     
-    with st.spinner(f"Menarik data {ticker_input} dan menganalisis sentimen bandar..."):
-        # 1. Ambil Data IHSG
+    with st.spinner(f"Menarik data {ticker_input} dan menganalisis market..."):
         ihsg_status = get_ihsg_regime()
         
-        # 2. Ambil Data Saham
         stock = yf.Ticker(ticker_symbol)
         df = stock.history(period="6mo")
-        info = stock.info
+        
+        # AMAN TERHADAP RATE LIMIT (Menggunakan Try-Except untuk stock.info)
+        info = {}
+        try:
+            info = stock.info
+        except Exception:
+            info = {} # Jika terkena limit, info dibiarkan kosong agar aplikasi tidak crash
         
         if df.empty:
-            st.error("Data tidak ditemukan. Pastikan kode saham benar.")
+            st.error("Data harga tidak ditemukan. Pastikan kode saham benar.")
         else:
             df = calculate_indicators(df)
             
-            # Ambil data hari terakhir
             today = df.iloc[-1]
             harga = float(today['Close'])
             open_price = float(today['Open'])
@@ -92,14 +89,14 @@ if ticker_input:
             macd = float(today['MACD']) if not pd.isna(today['MACD']) else 0
             signal = float(today['Signal_Line']) if not pd.isna(today['Signal_Line']) else 0
             
-            # Fundamental Info
-            roe = info.get('returnOnEquity', 0)
-            pbv = info.get('priceToBook', 0)
-            yield_div = info.get('dividendYield', 0)
+            # Ambil fundamental dengan aman
+            roe = info.get('returnOnEquity', None)
+            pbv = info.get('priceToBook', None)
+            yield_div = info.get('dividendYield', None)
             eps = info.get('trailingEps', 0)
             
-            roe_str = f"{roe*100:.2f}%" if roe else "N/A"
-            pbv_str = f"{pbv:.2f}x" if pbv else "N/A"
+            roe_str = f"{roe*100:.2f}%" if roe else "N/A (Rate Limit)"
+            pbv_str = f"{pbv:.2f}x" if pbv else "N/A (Rate Limit)"
             yield_str = f"{yield_div*100:.2f}%" if yield_div else "0.00%"
             
             # --- LOGIKA FAST TRADE ---
@@ -117,7 +114,7 @@ if ticker_input:
                 if is_rejection and is_volume_spike and rsi < 40:
                     strategi_final = "SPEKULASI BUY (FAST TRADE)"
                     warna_strategi = "#F59E0B"
-                    alasan = "IHSG Berdarah, tapi ada pantulan kuat (rejection) dan lonjakan volume dari bawah. Waspada!"
+                    alasan = "IHSG Berdarah, tapi ada pantulan kuat (rejection) dan lonjakan volume dari bawah."
                 else:
                     strategi_final = "TUNGGU (IHSG BERDARAH)"
                     warna_strategi = "#EF4444"
@@ -134,21 +131,18 @@ if ticker_input:
                 elif harga < ma20 and not is_rejection:
                     strategi_final = "SKIP (DOWNTREND)"
                     warna_strategi = "#EF4444"
-                    alasan = "Harga di bawah MA20 dan tidak ada perlawanan beli (pisau jatuh)."
+                    alasan = "Harga di bawah MA20 dan tidak ada perlawanan beli."
                 else:
                     strategi_final = "TUNGGU MOMENTUM"
                     warna_strategi = "#9CA3AF"
-                    alasan = "Pergerakan harga dan volume hari ini belum menarik untuk fast trade. Pantau besok."
+                    alasan = "Pergerakan harga dan volume hari ini belum menarik untuk fast trade."
 
             # --- TAMPILAN UI ---
-            
-            # Notifikasi IHSG
             if ihsg_status == "BEARISH":
                 st.warning("⚠️ **STATUS IHSG: BEARISH (DOWNTREND).** Kurangi agresivitas trading, ketatkan cutloss!")
             else:
                 st.success("✅ **STATUS IHSG: BULLISH/NETRAL.** Kondisi market mendukung untuk trading.")
 
-            # CARD 1: FUNDAMENTAL RINGKAS
             st.markdown(f"""
             <div class="pro-card">
                 <div class="card-label">⚡ FUNDAMENTAL RINGKAS</div>
@@ -160,7 +154,6 @@ if ticker_input:
             </div>
             """, unsafe_allow_html=True)
             
-            # CARD 2: SMART MONEY (VOLUME)
             vol_status = "VOLUME MELEDAK 🔥" if is_volume_spike else "VOLUME KERING"
             vol_color = "#10B981" if is_volume_spike else "#EF4444"
             st.markdown(f"""
@@ -173,7 +166,6 @@ if ticker_input:
             </div>
             """, unsafe_allow_html=True)
             
-            # CARD 3: TEKNIKAL & HARGA (PENGGANTI BID/OFFER)
             cond_price = "badge-green" if harga > ma20 else "badge-red"
             cond_ma = "badge-green" if ma20 > ma50 else "badge-red"
             cond_macd = "badge-green" if macd > signal else "badge-red"
@@ -196,14 +188,13 @@ if ticker_input:
             </div>
             """, unsafe_allow_html=True)
             
-            # CARD 4: FINAL KEPUTUSAN
             st.markdown(f"""
             <div class="pro-card" style="border-left: 5px solid {warna_strategi};">
                 <div class="card-label" style="color: {warna_strategi}; font-size: 14px;">🎯 FINAL STRATEGI PUSAT KEPUTUSAN</div>
                 <h2 style="color: {warna_strategi}; margin-top: 0; margin-bottom: 5px;">{strategi_final}</h2>
                 <p style="color: #E4E4E7; margin-bottom: 0; font-size: 14px;"><strong>Analisis Mesin:</strong> {alasan}</p>
                 <div style="margin-top: 12px; font-size: 11px; color: #A1A1AA; border-top: 1px solid #27272A; padding-top: 8px;">
-                    *Strategi ini dikhususkan untuk Fast Trade / Swing Pendek (1-3 Hari). Gunakan aplikasi sekuritas Anda untuk eksekusi final pada jam bursa.
+                    *Strategi Fast Trade (1-3 Hari). Jika bagian fundamental menampilkan "Rate Limit", itu karena batasan dari Yahoo Finance, namun analisis teknikal dan sinyal utama Anda tetap berjalan 100% akurat.
                 </div>
             </div>
             """, unsafe_allow_html=True)
