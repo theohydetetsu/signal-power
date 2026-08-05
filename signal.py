@@ -53,12 +53,13 @@ def calculate_indicators(df):
 
 # --- UI UTAMA ---
 st.title("⚡ Overpower Fast Trade Screener")
-ticker_input = st.text_input("Masukkan Kode Saham (contoh: TOWR, BBCA, GOTO):", "TOWR").upper()
+ticker_input = st.text_input("Masukkan Kode Saham (contoh: TOWR, BBCA, SIDO):", "SIDO").upper()
 
 if ticker_input:
     ticker_symbol = f"{ticker_input}.JK" if not ticker_input.endswith(".JK") else ticker_input
+    kode_tampil = ticker_input.replace('.JK', '')
     
-    with st.spinner(f"Menarik data {ticker_input} dan menganalisis market..."):
+    with st.spinner(f"Menarik data {kode_tampil} dan menganalisis market..."):
         ihsg_status = get_ihsg_regime()
         
         stock = yf.Ticker(ticker_symbol)
@@ -88,7 +89,10 @@ if ticker_input:
             macd = float(today['MACD']) if not pd.isna(today['MACD']) else 0
             signal = float(today['Signal_Line']) if not pd.isna(today['Signal_Line']) else 0
             
-            # --- AMBIL DATA FUNDAMENTAL LEBIH LENGKAP & AMAN DARI ERROR ---
+            # --- AMBIL DATA FUNDAMENTAL & IDENTITAS PERUSAHAAN ---
+            nama_perusahaan = info.get('longName', 'Nama Perusahaan Tidak Tersedia')
+            sektor = info.get('sector', 'Sektor Tidak Tersedia')
+            
             roe = info.get('returnOnEquity', None)
             pbv = info.get('priceToBook', None)
             yield_div = info.get('dividendYield', None)
@@ -96,13 +100,19 @@ if ticker_input:
             eps = info.get('trailingEps', 0)
             market_cap = info.get('marketCap', 0)
             
-            roe_str = f"{roe*100:.2f}%" if roe is not None else "16.14%"  # Fallback nilai normal jika kosong
-            pbv_str = f"{pbv:.2f}x" if pbv is not None else "0.83x"
-            yield_str = f"{yield_div*100:.2f}%" if yield_div is not None else "3.45%"
+            roe_str = f"{roe*100:.2f}%" if roe is not None else "N/A"
+            pbv_str = f"{pbv:.2f}x" if pbv is not None else "N/A"
+            
+            # PERBAIKAN DIVIDEND YIELD
+            if yield_div is not None:
+                actual_yield = yield_div * 100 if yield_div < 1 else yield_div
+                yield_str = f"{actual_yield:.2f}%"
+            else:
+                yield_str = "N/A"
+                
             per_str = f"{per:.2f}x" if per is not None else "N/A"
             eps_val = float(eps) if eps is not None else 0.0
             
-            # Format Market Cap ke Triliun Rupiah
             if market_cap and market_cap > 0:
                 mcap_str = f"Rp {market_cap / 1_000_000_000_000:.1f} T"
             else:
@@ -147,15 +157,31 @@ if ticker_input:
                     alasan = "Pergerakan harga dan volume hari ini belum menarik untuk fast trade."
 
             # --- TAMPILAN UI ---
+            
+            # HEADER IDENTITAS PERUSAHAAN BARU
+            st.markdown(f"""
+            <div style="display: flex; align-items: center; background-color: #18181B; padding: 20px; border-radius: 12px; border: 1px solid #27272A; margin-bottom: 20px;">
+                <div style="background-color: #27272A; padding: 15px 20px; border-radius: 10px; margin-right: 20px; border: 1px solid #3F3F46;">
+                    <span style="font-size: 28px;">🏢</span>
+                </div>
+                <div>
+                    <h1 style="margin: 0; color: #FFFFFF; font-size: 28px; font-weight: 800; letter-spacing: 1px;">{kode_tampil}</h1>
+                    <p style="margin: 2px 0 0 0; color: #E4E4E7; font-size: 16px; font-weight: 500;">{nama_perusahaan}</p>
+                    <p style="margin: 2px 0 0 0; color: #A1A1AA; font-size: 13px;">{sektor}</p>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # STATUS IHSG
             if ihsg_status == "BEARISH":
                 st.warning("⚠️ **STATUS IHSG: BEARISH (DOWNTREND).** Kurangi agresivitas trading, ketatkan cutloss!")
             else:
                 st.success("✅ **STATUS IHSG: BULLISH/NETRAL.** Kondisi market mendukung untuk trading.")
 
-            # KOTAK FUNDAMENTAL DIPERLUAS (GRID 2x3 AGAR TIDAK SEDIKIT)
+            # CARD 1: FUNDAMENTAL
             st.markdown(f"""
             <div class="pro-card">
-                <div class="card-label">⚡ FUNDAMENTAL RINGKAS (LENGKAP)</div>
+                <div class="card-label">⚡ FUNDAMENTAL RINGKAS</div>
                 <div class="data-grid" style="grid-template-columns: repeat(3, 1fr); gap: 12px;">
                     <div><span class="data-label">ROE</span><span class="data-value">{roe_str}</span></div>
                     <div><span class="data-label">PBV</span><span class="data-value">{pbv_str}</span></div>
@@ -167,6 +193,7 @@ if ticker_input:
             </div>
             """, unsafe_allow_html=True)
             
+            # CARD 2: SMART MONEY
             vol_status = "VOLUME MELEDAK 🔥" if is_volume_spike else "VOLUME KERING"
             vol_color = "#10B981" if is_volume_spike else "#EF4444"
             st.markdown(f"""
@@ -179,10 +206,14 @@ if ticker_input:
             </div>
             """, unsafe_allow_html=True)
             
+            # CARD 3: TEKNIKAL & HARGA (PERBAIKAN EPS MENJADI RSI)
             cond_price = "badge-green" if harga > ma20 else "badge-red"
             cond_ma = "badge-green" if ma20 > ma50 else "badge-red"
             cond_macd = "badge-green" if macd > signal else "badge-red"
             volatilitas = "TINGGI" if (df['High'].iloc[-1] - df['Low'].iloc[-1]) / harga > 0.03 else "NORMAL"
+            
+            # Warna RSI: Hijau jika Oversold (<40), Merah jika Overbought (>70)
+            rsi_color = "#10B981" if rsi < 40 else "#EF4444" if rsi > 70 else "#FFFFFF"
             
             st.markdown(f"""
             <div class="pro-card">
@@ -191,7 +222,7 @@ if ticker_input:
                     <div><span class="data-label">HARGA TERAKHIR</span><span class="data-value">{int(harga):,}</span></div>
                     <div><span class="data-label">VOLATILITAS</span><span class="data-value" style="color: {'#EF4444' if volatilitas == 'TINGGI' else '#10B981'};">{volatilitas}</span></div>
                     <div><span class="data-label">MA20 (EMA)</span><span class="data-value">{int(ma20):,}</span></div>
-                    <div><span class="data-label">EPS KODE</span><span class="data-value">{eps_val:,.2f}</span></div>
+                    <div><span class="data-label">RSI (14) MOMENTUM</span><span class="data-value" style="color: {rsi_color};">{rsi:.1f}</span></div>
                 </div>
                 <div style="margin-top:15px; display:flex; gap:6px; flex-wrap:wrap; border-top:1px dashed #27272A; padding-top:12px;">
                     <span class="{cond_price}">• P>MA20</span>
@@ -201,13 +232,14 @@ if ticker_input:
             </div>
             """, unsafe_allow_html=True)
             
+            # CARD 4: FINAL KEPUTUSAN
             st.markdown(f"""
             <div class="pro-card" style="border-left: 5px solid {warna_strategi};">
                 <div class="card-label" style="color: {warna_strategi}; font-size: 14px;">🎯 FINAL STRATEGI PUSAT KEPUTUSAN</div>
                 <h2 style="color: {warna_strategi}; margin-top: 0; margin-bottom: 5px;">{strategi_final}</h2>
                 <p style="color: #E4E4E7; margin-bottom: 0; font-size: 14px;"><strong>Analisis Mesin:</strong> {alasan}</p>
                 <div style="margin-top: 12px; font-size: 11px; color: #A1A1AA; border-top: 1px solid #27272A; padding-top: 8px;">
-                    *Strategi Fast Trade (1-3 Hari). Error sebelumnya telah dibersihkan dan aman dari variabel kosong.
+                    *Strategi Fast Trade (1-3 Hari). Data valid EOD (End of Day) atau delay 15-20 menit pada jam bursa.
                 </div>
             </div>
             """, unsafe_allow_html=True)
