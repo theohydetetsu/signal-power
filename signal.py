@@ -28,45 +28,40 @@ def get_ihsg_regime():
     try:
         ihsg = yf.download("^JKSE", period="3mo", progress=False)
         if ihsg.empty: return "NETRAL"
-        close_ihsg = float(ihsg['Close'].iloc[-1])
-        ma20_ihsg = float(ihsg['Close'].rolling(window=20).mean().iloc[-1])
+        close_ihsg = float(ihsg['Close'].dropna().iloc[-1])
+        ma20_ihsg = float(ihsg['Close'].rolling(window=20).mean().dropna().iloc[-1])
         return "BULLISH" if close_ihsg > ma20_ihsg else "BEARISH"
     except Exception:
         return "NETRAL"
 
 # --- FUNGSI: MENGHITUNG INDIKATOR DEWA ---
 def calculate_indicators(df):
-    # Moving Averages
     df['MA20'] = df['Close'].rolling(window=20).mean()
     df['MA50'] = df['Close'].rolling(window=50).mean()
     df['VOL_SMA20'] = df['Volume'].rolling(window=20).mean()
     
-    # RSI
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
     
-    # MACD
     exp1 = df['Close'].ewm(span=12, adjust=False).mean()
     exp2 = df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = exp1 - exp2
     df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
     
-    # UPGRADE 2: Support & Resistance (20 Hari)
     df['Support'] = df['Low'].rolling(window=20).min()
     df['Resistance'] = df['High'].rolling(window=20).max()
     
-    # UPGRADE 3: On-Balance Volume (OBV) - Jejak Bandar
     df['OBV'] = (np.sign(delta) * df['Volume']).fillna(0).cumsum()
     df['OBV_MA'] = df['OBV'].rolling(window=20).mean()
     
     return df
 
-# --- FUNGSI: MEMBUAT CHART MINI INTERAKTIF ---
+# --- FUNGSI: MEMBUAT CHART MINI INTERAKTIF (LOCKED) ---
 def create_mini_chart(df, ticker):
-    df_chart = df.tail(60) # Ambil 3 bulan terakhir agar chart tidak terlalu rapat
+    df_chart = df.tail(60) 
     fig = go.Figure(data=[go.Candlestick(x=df_chart.index,
                     open=df_chart['Open'],
                     high=df_chart['High'],
@@ -84,10 +79,13 @@ def create_mini_chart(df, ticker):
         margin=dict(l=0, r=0, t=30, b=0),
         height=350,
         paper_bgcolor='#18181B',
-        plot_bgcolor='#18181B'
+        plot_bgcolor='#18181B',
+        dragmode=False, # MENGUNCI GESERAN
+        hovermode='x unified'
     )
-    fig.update_xaxes(rangeslider_visible=False, gridcolor='#27272A')
-    fig.update_yaxes(gridcolor='#27272A')
+    # MENGUNCI SUMBU X DAN Y
+    fig.update_xaxes(rangeslider_visible=False, fixedrange=True, gridcolor='#27272A')
+    fig.update_yaxes(fixedrange=True, gridcolor='#27272A')
     return fig
 
 # --- LOGIKA KEPUTUSAN UTAMA ---
@@ -97,6 +95,11 @@ def analisis_saham(ticker_input, ihsg_status):
     try:
         stock = yf.Ticker(ticker_symbol)
         df = stock.history(period="6mo")
+        
+        # FILTER KETAT: Buang data kosong / volume 0 (Mencegah Harga 0)
+        df = df.dropna(subset=['Close', 'Volume'])
+        df = df[df['Volume'] > 0]
+        
         if df.empty: return None
         
         df = calculate_indicators(df)
@@ -127,7 +130,6 @@ def analisis_saham(ticker_input, ihsg_status):
         
         strategi_final = "SKIP (DOWNTREND)"
         warna_strategi = "#EF4444" 
-        alasan = "Harga di bawah MA20 dan tidak ada perlawanan beli."
         
         if ihsg_status == "BEARISH":
             if is_rejection and is_volume_spike and rsi < 40:
@@ -144,11 +146,14 @@ def analisis_saham(ticker_input, ihsg_status):
                 strategi_final = "⚡ MOMENTUM BUY"
                 warna_strategi = "#10B981"
             elif ma20 > 0 and harga < ma20 and not is_rejection:
-                pass # Tetap SKIP
+                pass 
             else:
                 strategi_final = "TUNGGU MOMENTUM"
                 warna_strategi = "#9CA3AF"
                 
+        # Proteksi nilai 0 di return
+        if harga == 0: return None
+        
         return {
             "df": df, "stock_info": stock.info, "harga": harga, "volume": volume,
             "rsi": rsi, "macd": macd, "signal": signal, "ma20": ma20, "ma50": ma50,
@@ -168,7 +173,6 @@ if ihsg_status == "BEARISH":
 else:
     st.success("✅ **STATUS IHSG: BULLISH/NETRAL.** Kondisi market mendukung untuk trading.")
 
-# --- UPGRADE 1: TABS UNTUK SINGLE ANALISIS & MASSAL ---
 tab1, tab2 = st.tabs(["🎯 GOD MODE (Detail per Saham)", "📡 RADAR MASSAL (Screener Banyak Saham)"])
 
 # ==========================================
@@ -182,13 +186,12 @@ with tab1:
             hasil = analisis_saham(ticker_input, ihsg_status)
             
             if not hasil:
-                st.error("Data gagal ditarik atau saham tidak ditemukan.")
+                st.error("Data gagal ditarik atau saham tidak valid hari ini. Coba kode lain.")
             else:
                 kode_tampil = ticker_input.replace('.JK', '')
                 info = hasil["stock_info"]
                 harga = hasil["harga"]
                 
-                # --- IDENTITAS PERUSAHAAN ---
                 nama_perusahaan = info.get('longName', 'Nama Perusahaan Tidak Tersedia')
                 sektor = info.get('sector', 'Sektor Tidak Tersedia')
                 st.markdown(f"""
@@ -204,13 +207,12 @@ with tab1:
                 if harga < 100 and harga > 0:
                     st.error("🚨 **PERINGATAN SAHAM PENNY:** Harga di bawah Rp 100. Risiko manipulasi sangat tinggi!")
 
-                # --- UPGRADE 4: MINI CHART INTERAKTIF ---
-                st.plotly_chart(create_mini_chart(hasil["df"], kode_tampil), use_container_width=True)
+                # MENAMPILKAN CHART DENGAN MODE BAR DIMATIKAN
+                st.plotly_chart(create_mini_chart(hasil["df"], kode_tampil), use_container_width=True, config={'displayModeBar': False})
 
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    # SMART MONEY & JEJAK BANDAR (UPGRADE 3)
                     vol = hasil["volume"]
                     vol_display = f"{vol / 1_000_000_000:.2f}B" if vol >= 1_000_000_000 else f"{vol / 1_000_000:.1f}M"
                     vol_status = "VOLUME MELEDAK 🔥" if hasil["is_volume_spike"] else "VOLUME KERING"
@@ -231,24 +233,22 @@ with tab1:
                     """, unsafe_allow_html=True)
 
                 with col2:
-                    # TRADING PLAN OTOMATIS (UPGRADE 2)
                     potensi_profit = ((hasil["resistance"] - harga) / harga) * 100 if harga > 0 else 0
                     risiko_loss = ((harga - hasil["support"]) / harga) * 100 if harga > 0 else 0
                     
+                    # HTML DIPADATKAN TANPA BARIS KOSONG AGAR TIDAK BOCOR
                     st.markdown(f"""
                     <div class="pro-card">
                         <div class="card-label">🎯 AUTO TRADING PLAN (S&R)</div>
                         <div class="data-grid" style="grid-template-columns: repeat(2, 1fr);">
                             <div><span class="data-label">HARGA ENTRY (SAAT INI)</span><span class="data-value">{harga:,.0f}</span></div>
                             <div><span class="data-label">RISK REWARD RATIO</span><span class="data-value" style="color: {'#10B981' if potensi_profit > risiko_loss else '#EF4444'};">{"BAIK" if potensi_profit > risiko_loss else "BURUK"}</span></div>
-                            
                             <div><span class="data-label">TARGET JUAL (RESISTANCE)</span><span class="data-value" style="color: #10B981;">{hasil["resistance"]:,.0f} <span style="font-size:11px;">(UP {potensi_profit:.1f}%)</span></span></div>
                             <div><span class="data-label">BATAS CUT LOSS (SUPPORT)</span><span class="data-value" style="color: #EF4444;">{hasil["support"]:,.0f} <span style="font-size:11px;">(DOWN {risiko_loss:.1f}%)</span></span></div>
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
 
-                # FINAL DECISION
                 st.markdown(f"""
                 <div class="pro-card" style="border-left: 5px solid {hasil['warna_strategi']};">
                     <div class="card-label" style="color: {hasil['warna_strategi']}; font-size: 14px;">⚡ FINAL KEPUTUSAN SISTEM</div>
@@ -302,4 +302,4 @@ with tab2:
             st.dataframe(df_hasil.style.map(color_cells, subset=['Sinyal Mesin', 'Trend (MA20)', 'Jejak Bandar (OBV)', 'Volume']), use_container_width=True, hide_index=True)
             st.success("✨ Pindai selesai! Fokus pada saham dengan Sinyal '🔥 SETUP A+' atau '⚡ MOMENTUM BUY'.")
         else:
-            st.warning("Tidak ada data yang berhasil dipindai. Cek kembali kode saham Anda.")
+            st.warning("Data gagal ditarik atau pasar sedang tutup. Cek kembali kode saham Anda.")
