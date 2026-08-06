@@ -80,10 +80,9 @@ def create_mini_chart(df, ticker):
         height=350,
         paper_bgcolor='#18181B',
         plot_bgcolor='#18181B',
-        dragmode=False, # MENGUNCI GESERAN
+        dragmode=False, 
         hovermode='x unified'
     )
-    # MENGUNCI SUMBU X DAN Y
     fig.update_xaxes(rangeslider_visible=False, fixedrange=True, gridcolor='#27272A')
     fig.update_yaxes(fixedrange=True, gridcolor='#27272A')
     return fig
@@ -96,7 +95,6 @@ def analisis_saham(ticker_input, ihsg_status):
         stock = yf.Ticker(ticker_symbol)
         df = stock.history(period="6mo")
         
-        # FILTER KETAT: Buang data kosong / volume 0 (Mencegah Harga 0)
         df = df.dropna(subset=['Close', 'Volume'])
         df = df[df['Volume'] > 0]
         
@@ -119,39 +117,63 @@ def analisis_saham(ticker_input, ihsg_status):
         signal = float(today['Signal_Line']) if pd.notna(today['Signal_Line']) else 0.0
         obv = float(today['OBV']) if pd.notna(today['OBV']) else 0.0
         obv_ma = float(today['OBV_MA']) if pd.notna(today['OBV_MA']) else 0.0
+        
         support = float(today['Support']) if pd.notna(today['Support']) else 0.0
         resistance = float(today['Resistance']) if pd.notna(today['Resistance']) else 0.0
+
+        # 🔥 TWEAK 1: PERBAIKAN SUPPORT SAHAM PENNY (<100)
+        if 50 < harga <= 100:
+            recent_low = float(df['Low'].tail(5).min())
+            support_dinamis = harga * 0.94 # Batas toleransi cut loss maksimal ~6%
+            support = max(recent_low, support_dinamis)
+            if support >= harga: 
+                support = harga * 0.94 # Paksa turun sedikit jika pergerakan flat
 
         body_candle = abs(harga - open_price)
         lower_shadow = (open_price - low_price) if harga > open_price else (harga - low_price)
         is_rejection = lower_shadow > (body_candle * 1.5)
         is_volume_spike = volume > (vol_sma20 * 1.5) if vol_sma20 > 0 else False
         is_dekat_support = (harga > ma20) and (harga < (ma20 * 1.05)) if ma20 > 0 else False
+        is_akumulasi = obv > obv_ma 
         
         strategi_final = "SKIP (DOWNTREND)"
         warna_strategi = "#EF4444" 
         
-        if ihsg_status == "BEARISH":
-            if is_rejection and is_volume_spike and rsi < 40:
-                strategi_final = "SPEKULASI BUY"
-                warna_strategi = "#F59E0B"
-            else:
-                strategi_final = "TUNGGU (IHSG BERDARAH)"
-                warna_strategi = "#EF4444"
+        # 🔥 TWEAK 2 & 3: LOGIKA FINAL DECISION OVERPOWER
+        if harga <= 50 and not is_volume_spike:
+            strategi_final = "💀 HINDARI (SAHAM TIDUR)"
+            warna_strategi = "#7F1D1D"
+        elif 50 < harga <= 120 and is_volume_spike and is_akumulasi:
+            strategi_final = "🔥 SPEKULASI BUY (BANDAR MASUK)"
+            warna_strategi = "#F59E0B"
         else:
-            if is_rejection and is_dekat_support and is_volume_spike:
-                strategi_final = "🔥 SETUP A+"
-                warna_strategi = "#10B981"
-            elif (ma20 > 0 and harga > ma20) and is_volume_spike and rsi < 60:
-                strategi_final = "⚡ MOMENTUM BUY"
-                warna_strategi = "#10B981"
-            elif ma20 > 0 and harga < ma20 and not is_rejection:
-                pass 
+            if ihsg_status == "BEARISH":
+                if is_rejection and is_volume_spike and rsi < 40:
+                    strategi_final = "SPEKULASI BUY (REVERSAL)"
+                    warna_strategi = "#F59E0B"
+                elif is_akumulasi and is_volume_spike:
+                    strategi_final = "👀 PANTAU (ADA AKUMULASI)"
+                    warna_strategi = "#3B82F6"
+                else:
+                    strategi_final = "TUNGGU (IHSG BERDARAH)"
+                    warna_strategi = "#EF4444"
             else:
-                strategi_final = "TUNGGU MOMENTUM"
-                warna_strategi = "#9CA3AF"
+                if is_rejection and is_dekat_support and is_volume_spike:
+                    strategi_final = "🔥 SETUP A+ (BUY)"
+                    warna_strategi = "#10B981"
+                elif (ma20 > 0 and harga > ma20) and is_volume_spike and rsi < 60:
+                    strategi_final = "⚡ MOMENTUM BUY"
+                    warna_strategi = "#10B981"
+                elif is_akumulasi and is_volume_spike:
+                    strategi_final = "👀 PANTAU (AKUMULASI MASIF)"
+                    warna_strategi = "#3B82F6"
+                elif ma20 > 0 and harga < ma20 and not is_rejection:
+                    strategi_final = "SKIP (DOWNTREND)"
+                    warna_strategi = "#EF4444"
+                else:
+                    strategi_final = "TUNGGU MOMENTUM"
+                    warna_strategi = "#9CA3AF"
                 
-        # Proteksi nilai 0 di return
         if harga == 0: return None
         
         return {
@@ -205,9 +227,8 @@ with tab1:
                 """, unsafe_allow_html=True)
                 
                 if harga < 100 and harga > 0:
-                    st.error("🚨 **PERINGATAN SAHAM PENNY:** Harga di bawah Rp 100. Risiko manipulasi sangat tinggi!")
+                    st.error("🚨 **PERINGATAN SAHAM PENNY:** Harga di bawah Rp 100. Risiko fluktuasi sangat tinggi!")
 
-                # MENAMPILKAN CHART DENGAN MODE BAR DIMATIKAN
                 st.plotly_chart(create_mini_chart(hasil["df"], kode_tampil), use_container_width=True, config={'displayModeBar': False})
 
                 col1, col2 = st.columns(2)
@@ -236,7 +257,6 @@ with tab1:
                     potensi_profit = ((hasil["resistance"] - harga) / harga) * 100 if harga > 0 else 0
                     risiko_loss = ((harga - hasil["support"]) / harga) * 100 if harga > 0 else 0
                     
-                    # HTML DIPADATKAN TANPA BARIS KOSONG AGAR TIDAK BOCOR
                     st.markdown(f"""
                     <div class="pro-card">
                         <div class="card-label">🎯 AUTO TRADING PLAN (S&R)</div>
@@ -296,10 +316,16 @@ with tab2:
             df_hasil = pd.DataFrame(hasil_scan)
             
             def color_cells(val):
-                color = '#10B981' if 'BUY' in val or 'SETUP A+' in val or val == 'BULLISH' or val == 'AKUMULASI' or val == 'MELEDAK' else '#EF4444' if 'SKIP' in val or val == 'BEARISH' or val == 'DISTRIBUSI' or val == 'KERING' else 'white'
+                # Pewarnaan disesuaikan dengan logika sinyal baru
+                color = '#10B981' if 'BUY' in val or 'SETUP' in val or val == 'BULLISH' or val == 'AKUMULASI' or val == 'MELEDAK' \
+                      else '#F59E0B' if 'SPEKULASI' in val \
+                      else '#3B82F6' if 'PANTAU' in val \
+                      else '#EF4444' if 'SKIP' in val or val == 'BEARISH' or val == 'DISTRIBUSI' or val == 'KERING' \
+                      else '#7F1D1D' if 'HINDARI' in val \
+                      else 'white'
                 return f'color: {color}'
 
             st.dataframe(df_hasil.style.map(color_cells, subset=['Sinyal Mesin', 'Trend (MA20)', 'Jejak Bandar (OBV)', 'Volume']), use_container_width=True, hide_index=True)
-            st.success("✨ Pindai selesai! Fokus pada saham dengan Sinyal '🔥 SETUP A+' atau '⚡ MOMENTUM BUY'.")
+            st.success("✨ Pindai selesai! Senjata sudah siap digunakan di medan tempur.")
         else:
             st.warning("Data gagal ditarik atau pasar sedang tutup. Cek kembali kode saham Anda.")
